@@ -105,16 +105,23 @@ mod tests {
 
         let now = std::time::Instant::now();
 
+        let (tx, rx) = std::sync::mpsc::channel();
+
         let read_threads: Vec<_> = (0..10)
-            .map(|id| {
+            .map(move |id| {
+                let tx = tx.clone();
                 thread::spawn(move || {
                     eprintln!("[{id}] getting read lock");
                     LOCK.read_lock();
+                    tx.send(()).unwrap();
                     eprintln!("[{id}] got read lock");
+
                     unsafe {
                         assert_eq!(RESOURCE, 10);
                     }
+
                     thread::sleep(Duration::from_secs(1));
+
                     eprintln!("[{id}] releasing read lock");
                     LOCK.release_read_lock();
                     eprintln!("[{id}] released read lock");
@@ -122,16 +129,16 @@ mod tests {
             })
             .collect();
 
-        // give read thread a headstart
-        // this is a little flimsy
-        thread::sleep(Duration::from_millis(500));
+        rx.iter().for_each(drop);
 
         eprintln!("[main] getting write lock");
         LOCK.write_lock();
         eprintln!("[main] got write lock");
+
         unsafe {
             RESOURCE *= 10;
         }
+
         eprintln!("[main] releasing write lock");
         LOCK.release_write_lock();
         eprintln!("[main] released write lock");
