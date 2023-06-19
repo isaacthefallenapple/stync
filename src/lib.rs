@@ -9,6 +9,24 @@ pub struct RWLock {
     lock: AtomicU64,
 }
 
+/// It's safe to read from the protected resource until this guard is dropped.
+pub struct ReadGuard<'a>(&'a RWLock);
+
+impl<'a> Drop for ReadGuard<'a> {
+    fn drop(&mut self) {
+        self.0.release_read_lock();
+    }
+}
+
+/// It's safe to write to the protected resource until this guard is dropped.
+pub struct WriteGuard<'a>(&'a RWLock);
+
+impl<'a> Drop for WriteGuard<'a> {
+    fn drop(&mut self) {
+        self.0.release_write_lock();
+    }
+}
+
 impl RWLock {
     pub const fn new() -> Self {
         Self {
@@ -16,19 +34,23 @@ impl RWLock {
         }
     }
 
-    pub fn read_lock(&self) {
+    pub fn read_lock(&self) -> ReadGuard<'_> {
         // I don't like this but I don't know how else to register a reader without a race
         // try registering a reader; if there is currently a writer, unregister again
         while self.lock.fetch_add(1, Ordering::SeqCst) & WRITE_MASK > 0 {
             self.lock.fetch_sub(1, Ordering::SeqCst);
         }
+
+        ReadGuard(self)
     }
 
-    pub fn release_read_lock(&self) {
+    fn release_read_lock(&self) {
         self.lock.fetch_sub(1, Ordering::SeqCst);
     }
 
-    pub fn write_lock(&self) {
+    pub fn write_lock(&self) -> WriteGuard<'_> {
+        let guard = WriteGuard(self);
+
         // try locking
         let is_locked = self.lock.fetch_or(WRITE_LOCK_FLAG, Ordering::SeqCst) & WRITE_LOCK_FLAG > 0;
 
@@ -38,7 +60,7 @@ impl RWLock {
             while self.lock.load(Ordering::SeqCst) & READER_MASK > 0 {
                 std::hint::spin_loop();
             }
-            return;
+            return guard;
         }
 
         // wait until queue is free to queue yourself
@@ -53,9 +75,11 @@ impl RWLock {
 
         // release queue
         self.lock.fetch_xor(WRITE_QUEUE_FLAG, Ordering::SeqCst);
+
+        guard
     }
 
-    pub fn release_write_lock(&self) {
+    fn release_write_lock(&self) {
         self.lock.fetch_xor(WRITE_LOCK_FLAG, Ordering::SeqCst);
     }
 }
@@ -77,11 +101,10 @@ mod tests {
             .map(|_| {
                 thread::spawn(move || {
                     for _ in 0..M {
-                        LOCK.write_lock();
+                        let _lock = LOCK.write_lock();
                         unsafe {
                             RESOURCE += 1;
                         }
-                        LOCK.release_write_lock();
                     }
                 })
             })
@@ -91,11 +114,10 @@ mod tests {
             h.join().unwrap();
         }
 
-        LOCK.read_lock();
+        let _lock = LOCK.read_lock();
         unsafe {
             assert_eq!(RESOURCE, N * M);
         }
-        LOCK.release_read_lock();
     }
 
     #[test]
@@ -112,7 +134,7 @@ mod tests {
                 let tx = tx.clone();
                 thread::spawn(move || {
                     eprintln!("[{id}] getting read lock");
-                    LOCK.read_lock();
+                    let _lock = LOCK.read_lock();
                     tx.send(()).unwrap();
                     eprintln!("[{id}] got read lock");
 
@@ -123,8 +145,6 @@ mod tests {
                     thread::sleep(Duration::from_secs(1));
 
                     eprintln!("[{id}] releasing read lock");
-                    LOCK.release_read_lock();
-                    eprintln!("[{id}] released read lock");
                 })
             })
             .collect();
@@ -132,16 +152,14 @@ mod tests {
         rx.iter().for_each(drop);
 
         eprintln!("[main] getting write lock");
-        LOCK.write_lock();
-        eprintln!("[main] got write lock");
+        {
+            LOCK.write_lock();
+            eprintln!("[main] got write lock");
 
-        unsafe {
-            RESOURCE *= 10;
+            unsafe {
+                RESOURCE *= 10;
+            }
         }
-
-        eprintln!("[main] releasing write lock");
-        LOCK.release_write_lock();
-        eprintln!("[main] released write lock");
 
         assert!(dbg!(now.elapsed()).as_secs() >= 1);
 
