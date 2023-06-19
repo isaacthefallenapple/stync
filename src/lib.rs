@@ -35,15 +35,21 @@ impl RWLock {
         // if not already locked, ...
         if !is_locked {
             // ...spin until there are no more readers
-            while self.lock.load(Ordering::SeqCst) & READER_MASK > 0 {}
+            while self.lock.load(Ordering::SeqCst) & READER_MASK > 0 {
+                std::hint::spin_loop();
+            }
             return;
         }
 
         // wait until queue is free to queue yourself
-        while self.lock.fetch_or(WRITE_QUEUE_FLAG, Ordering::SeqCst) & WRITE_QUEUE_FLAG > 0 {}
+        while self.lock.fetch_or(WRITE_QUEUE_FLAG, Ordering::SeqCst) & WRITE_QUEUE_FLAG > 0 {
+            std::hint::spin_loop();
+        }
 
         // this writer is now queued; wait until previous lock is released
-        while self.lock.fetch_or(WRITE_LOCK_FLAG, Ordering::SeqCst) & WRITE_LOCK_FLAG > 0 {}
+        while self.lock.fetch_or(WRITE_LOCK_FLAG, Ordering::SeqCst) & WRITE_LOCK_FLAG > 0 {
+            std::hint::spin_loop();
+        }
 
         // release queue
         self.lock.fetch_xor(WRITE_QUEUE_FLAG, Ordering::SeqCst);
