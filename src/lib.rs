@@ -1,40 +1,82 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+#![feature(strict_provenance)]
+#![warn(fuzzy_provenance_casts)]
+#![warn(lossy_provenance_casts)]
+
+use std::{
+    ops::{Deref, DerefMut},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 const WRITE_LOCK_FLAG: u64 = 1 << 63;
 const WRITE_QUEUE_FLAG: u64 = 1 << 62;
 const WRITE_MASK: u64 = WRITE_LOCK_FLAG | WRITE_QUEUE_FLAG;
 const READER_MASK: u64 = WRITE_QUEUE_FLAG - 1;
 
-pub struct RWLock {
+pub struct RWLock<T> {
     lock: AtomicU64,
+    data: *mut T,
 }
 
-/// It's safe to read from the protected resource until this guard is dropped.
-pub struct ReadGuard<'a>(&'a RWLock);
+unsafe impl<T: Send + Sync> Sync for RWLock<T> {}
 
-impl<'a> Drop for ReadGuard<'a> {
+/// It's safe to read from the protected resource until this guard is dropped.
+pub struct ReadGuard<'a, T>(&'a RWLock<T>);
+
+impl<'a, T> Deref for ReadGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: this is safe because we hold the `ReadGuard` and constructing a `RWLock`
+        // requires `data` outlive `self`.
+        unsafe { &*self.0.data }
+    }
+}
+
+impl<'a, T> Drop for ReadGuard<'a, T> {
     fn drop(&mut self) {
         self.0.release_read_lock();
     }
 }
 
 /// It's safe to write to the protected resource until this guard is dropped.
-pub struct WriteGuard<'a>(&'a RWLock);
+pub struct WriteGuard<'a, T>(&'a RWLock<T>);
 
-impl<'a> Drop for WriteGuard<'a> {
+impl<'a, T> Deref for WriteGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: this is safe because no one else can write to `data` while we hold this guard and
+        // constructing a `RWLock` requires `data` outlive `self`.
+        unsafe { &*self.0.data }
+    }
+}
+
+impl<'a, T> DerefMut for WriteGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: this is safe because no one else can write to or read from `data` while we hold
+        // this guard and constructing a `RWLock` requires `data` outlive `self`.
+        unsafe { &mut *self.0.data }
+    }
+}
+
+impl<'a, T> Drop for WriteGuard<'a, T> {
     fn drop(&mut self) {
         self.0.release_write_lock();
     }
 }
 
-impl RWLock {
-    pub const fn new() -> Self {
+impl<T> RWLock<T> {
+    /// # Safety
+    ///
+    ///
+    pub const unsafe fn new(data: *mut T) -> Self {
         Self {
             lock: AtomicU64::new(0),
+            data,
         }
     }
 
-    pub fn read_lock(&self) -> ReadGuard<'_> {
+    pub fn read_lock(&self) -> ReadGuard<'_, T> {
         // I don't like this but I don't know how else to register a reader without a race
         // try registering a reader; if there is currently a writer, unregister again
         while self.lock.fetch_add(1, Ordering::SeqCst) & WRITE_MASK > 0 {
@@ -48,7 +90,7 @@ impl RWLock {
         self.lock.fetch_sub(1, Ordering::SeqCst);
     }
 
-    pub fn write_lock(&self) -> WriteGuard<'_> {
+    pub fn write_lock(&self) -> WriteGuard<'_, T> {
         let guard = WriteGuard(self);
 
         // try locking
@@ -92,19 +134,16 @@ mod tests {
     #[test]
     fn write_only() {
         static mut RESOURCE: isize = 0;
-        static LOCK: RWLock = RWLock::new();
+        static LOCK: RWLock<isize> = unsafe { RWLock::new(&RESOURCE as *const _ as *mut _) };
 
-        const N: isize = 100;
+        const N: isize = 10;
         const M: isize = 10000;
 
         let handles: Vec<_> = (0..N)
             .map(|_| {
                 thread::spawn(move || {
                     for _ in 0..M {
-                        let _lock = LOCK.write_lock();
-                        unsafe {
-                            RESOURCE += 1;
-                        }
+                        *LOCK.write_lock() += 1;
                     }
                 })
             })
@@ -114,16 +153,13 @@ mod tests {
             h.join().unwrap();
         }
 
-        let _lock = LOCK.read_lock();
-        unsafe {
-            assert_eq!(RESOURCE, N * M);
-        }
+        assert_eq!(*LOCK.read_lock(), N * M);
     }
 
     #[test]
     fn cannot_write_while_reading() {
         static mut RESOURCE: isize = 10;
-        static LOCK: RWLock = RWLock::new();
+        static LOCK: RWLock<isize> = unsafe { RWLock::new(&RESOURCE as *const _ as *mut _) };
 
         let now = std::time::Instant::now();
 
@@ -134,13 +170,11 @@ mod tests {
                 let tx = tx.clone();
                 thread::spawn(move || {
                     eprintln!("[{id}] getting read lock");
-                    let _lock = LOCK.read_lock();
+                    let lock = LOCK.read_lock();
                     tx.send(()).unwrap();
                     eprintln!("[{id}] got read lock");
 
-                    unsafe {
-                        assert_eq!(RESOURCE, 10);
-                    }
+                    assert_eq!(*lock, 10);
 
                     thread::sleep(Duration::from_secs(1));
 
@@ -151,21 +185,11 @@ mod tests {
 
         rx.iter().for_each(drop);
 
-        eprintln!("[main] getting write lock");
-        {
-            LOCK.write_lock();
-            eprintln!("[main] got write lock");
-
-            unsafe {
-                RESOURCE *= 10;
-            }
-        }
+        *LOCK.write_lock() *= 10;
 
         assert!(dbg!(now.elapsed()).as_secs() >= 1);
 
-        unsafe {
-            assert_eq!(RESOURCE, 100);
-        }
+        assert_eq!(*LOCK.read_lock(), 100);
 
         for thread in read_threads {
             thread.join().unwrap();
