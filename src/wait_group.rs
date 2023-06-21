@@ -66,7 +66,7 @@ mod tests {
     use super::*;
     use std::{
         thread,
-        time::{self, Duration},
+        time::{Duration, Instant},
     };
 
     #[test]
@@ -74,7 +74,7 @@ mod tests {
     fn simple() {
         let wg = WaitGroup::new();
 
-        let now = time::Instant::now();
+        let now = Instant::now();
         let _: Vec<_> = (0..10)
             .map(|_| {
                 let wg = wg.clone();
