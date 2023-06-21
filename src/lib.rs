@@ -69,6 +69,19 @@ impl<'a, T> Drop for WriteGuard<'a, T> {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum TryReadError {
+    HasWriter,
+    QueuedWriter,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum TryWriteError {
+    HasWriter,
+    QueuedWriter,
+    HasReaders(u64),
+}
+
 impl<T> RWLock<T> {
     /// # Safety
     ///
@@ -92,6 +105,22 @@ impl<T> RWLock<T> {
         }
 
         ReadGuard(self)
+    }
+
+    /// Try to acquire read access. Will not block the thread.
+    pub fn try_read(&self) -> Result<ReadGuard<'_, T>, TryReadError> {
+        let current = self.lock.fetch_add(1, Ordering::SeqCst);
+        if current & WRITE_MASK > 0 {
+            self.lock.fetch_sub(1, Ordering::SeqCst);
+
+            return Err(if current & WRITE_LOCK_FLAG > 0 {
+                TryReadError::HasWriter
+            } else {
+                TryReadError::QueuedWriter
+            });
+        }
+
+        Ok(ReadGuard(self))
     }
 
     fn release_read_lock(&self) {
@@ -128,6 +157,29 @@ impl<T> RWLock<T> {
         self.lock.fetch_xor(WRITE_QUEUE_FLAG, Ordering::SeqCst);
 
         guard
+    }
+
+    /// Try to acquire write access. Will not block the thread.
+    pub fn try_write(&self) -> Result<WriteGuard<'_, T>, TryWriteError> {
+        // try locking
+        let current = self.lock.fetch_or(WRITE_LOCK_FLAG, Ordering::SeqCst);
+        let is_locked = current & WRITE_MASK > 0;
+
+        if is_locked {
+            return Err(if current & WRITE_LOCK_FLAG > 0 {
+                TryWriteError::HasWriter
+            } else {
+                TryWriteError::QueuedWriter
+            });
+        }
+
+        let readers = self.lock.load(Ordering::SeqCst) & READER_MASK;
+        if readers > 0 {
+            self.lock.fetch_xor(WRITE_LOCK_FLAG, Ordering::SeqCst);
+            return Err(TryWriteError::HasReaders(readers));
+        }
+
+        Ok(WriteGuard(self))
     }
 
     fn release_write_lock(&self) {
@@ -202,6 +254,80 @@ mod tests {
 
         for thread in read_threads {
             thread.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_try() {
+        static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(0);
+        static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
+
+        for _ in 0..10 {
+            let read = LOCK.read();
+
+            assert!(LOCK.try_write().is_err());
+
+            drop(read);
+
+            let write = LOCK.try_write().expect("couldn't acquire lock");
+
+            assert!(LOCK.try_read().is_err());
+
+            drop(write);
+
+            // reads don't block each other
+            let _read = LOCK.try_read().expect("couldn't acquire lock");
+            let _read = LOCK.read();
+            let _ = LOCK.try_read().expect("couldn't acquire lock");
+        }
+    }
+
+    #[test]
+    fn fn_test_try_write_doesnt_block() {
+        static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(0);
+        static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
+
+        let now = std::time::Instant::now();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let write_handle = thread::spawn(move || {
+            let write = LOCK.write();
+            tx.send(()).unwrap();
+            thread::sleep(Duration::from_secs(1));
+            drop(write);
+        });
+
+        let try_write_handle = thread::spawn(move || {
+            let _ = rx.recv().unwrap();
+            assert!(LOCK.try_write().is_err());
+        });
+
+        for handle in [write_handle, try_write_handle] {
+            handle.join().unwrap();
+        }
+
+        assert!(now.elapsed().as_millis() <= 1100);
+    }
+
+    #[test]
+    fn test_try_read_fails_with_reader_count() {
+        static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(0);
+        static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
+
+        const N: u64 = 100;
+        let _readers: Vec<_> = (0..N).map(|_| LOCK.read()).collect();
+
+        match LOCK.try_write() {
+            Err(TryWriteError::HasReaders(n)) => {
+                assert_eq!(n, N);
+            }
+            Err(e) => {
+                panic!("wrong error: {e:?}");
+            }
+            Ok(_) => {
+                panic!("got write lock while readers there are readers");
+            }
         }
     }
 }
