@@ -1,5 +1,6 @@
 use std::{
     ops::{Deref, DerefMut},
+    ptr::NonNull,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -13,7 +14,7 @@ const READER_MASK: u64 = WRITE_QUEUE_FLAG - 1;
 
 pub struct RWLock<T> {
     lock: AtomicU64,
-    data: *mut T,
+    data: NonNull<T>,
 }
 
 // `T` has to be `Send` because `WriteLock` is `Send`.
@@ -28,7 +29,7 @@ impl<'a, T> Deref for ReadGuard<'a, T> {
     fn deref(&self) -> &Self::Target {
         // SAFETY: this is safe because we hold the `ReadGuard` and constructing a `RWLock`
         // requires `data` outlive `self`.
-        unsafe { &*self.0.data }
+        unsafe { self.0.data.as_ref() }
     }
 }
 
@@ -47,7 +48,7 @@ impl<'a, T> Deref for WriteGuard<'a, T> {
     fn deref(&self) -> &Self::Target {
         // SAFETY: this is safe because no one else can write to `data` while we hold this guard and
         // constructing a `RWLock` requires `data` outlive `self`.
-        unsafe { &*self.0.data }
+        unsafe { self.0.data.as_ref() }
     }
 }
 
@@ -55,7 +56,7 @@ impl<'a, T> DerefMut for WriteGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: this is safe because no one else can write to or read from `data` while we hold
         // this guard and constructing a `RWLock` requires `data` outlive `self`.
-        unsafe { &mut *self.0.data }
+        unsafe { &mut *self.0.data.as_ptr() }
     }
 }
 
@@ -88,7 +89,7 @@ impl<T> RWLock<T> {
     pub const unsafe fn new(data: *mut T) -> Self {
         Self {
             lock: AtomicU64::new(0),
-            data,
+            data: NonNull::new_unchecked(data),
         }
     }
 
