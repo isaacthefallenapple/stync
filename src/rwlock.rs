@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn fn_test_try_write_doesnt_block() {
+    fn test_try_write_doesnt_block() {
         static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(0);
         static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
 
