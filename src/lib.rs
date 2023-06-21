@@ -84,7 +84,7 @@ impl<T> RWLock<T> {
     }
 
     /// Blocks the thread until it's safe to read the data.
-    pub fn read_lock(&self) -> ReadGuard<'_, T> {
+    pub fn read(&self) -> ReadGuard<'_, T> {
         // I don't like this but I don't know how else to register a reader without a race
         // try registering a reader; if there is currently a writer, unregister again
         while self.lock.fetch_add(1, Ordering::SeqCst) & WRITE_MASK > 0 {
@@ -99,7 +99,7 @@ impl<T> RWLock<T> {
     }
 
     /// Blocks the thread until it's safe to write the data.
-    pub fn write_lock(&self) -> WriteGuard<'_, T> {
+    pub fn write(&self) -> WriteGuard<'_, T> {
         let guard = WriteGuard(self);
 
         // try locking
@@ -152,7 +152,7 @@ mod tests {
             .map(|_| {
                 thread::spawn(move || {
                     for _ in 0..M {
-                        *LOCK.write_lock() += 1;
+                        *LOCK.write() += 1;
                     }
                 })
             })
@@ -162,7 +162,7 @@ mod tests {
             h.join().unwrap();
         }
 
-        assert_eq!(*LOCK.read_lock(), N * M);
+        assert_eq!(*LOCK.read(), N * M);
     }
 
     #[test]
@@ -179,7 +179,7 @@ mod tests {
                 let tx = tx.clone();
                 thread::spawn(move || {
                     eprintln!("[{id}] getting read lock");
-                    let lock = LOCK.read_lock();
+                    let lock = LOCK.read();
                     tx.send(()).unwrap();
                     eprintln!("[{id}] got read lock");
 
@@ -194,11 +194,11 @@ mod tests {
 
         rx.iter().for_each(drop);
 
-        *LOCK.write_lock() *= 10;
+        *LOCK.write() *= 10;
 
         assert!(dbg!(now.elapsed()).as_secs() >= 1);
 
-        assert_eq!(*LOCK.read_lock(), 100);
+        assert_eq!(*LOCK.read(), 100);
 
         for thread in read_threads {
             thread.join().unwrap();
