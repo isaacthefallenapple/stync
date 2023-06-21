@@ -187,7 +187,7 @@ impl<T> RWLock<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wait_group::WaitGroup;
+    use crate::wait_group::raii::WaitGroup;
     use std::{cell::UnsafeCell, thread, time::Duration};
 
     #[test]
