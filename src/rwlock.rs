@@ -187,6 +187,7 @@ impl<T> RWLock<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wait_group::WaitGroup;
     use std::{cell::UnsafeCell, thread, time::Duration};
 
     #[test]
@@ -221,15 +222,15 @@ mod tests {
 
         let now = std::time::Instant::now();
 
-        let (tx, rx) = std::sync::mpsc::channel();
+        let wg = WaitGroup::new();
 
         let read_threads: Vec<_> = (0..if cfg!(miri) { 3 } else { 100 })
-            .map(move |id| {
-                let tx = tx.clone();
+            .map(|id| {
+                let wg = wg.clone();
                 thread::spawn(move || {
                     eprintln!("[{id}] getting read lock");
                     let lock = LOCK.read();
-                    tx.send(()).unwrap();
+                    wg.done();
                     eprintln!("[{id}] got read lock");
 
                     assert_eq!(*lock, 10);
@@ -241,7 +242,7 @@ mod tests {
             })
             .collect();
 
-        rx.iter().for_each(drop);
+        wg.wait();
 
         *LOCK.write() *= 10;
 
@@ -286,17 +287,18 @@ mod tests {
 
         let now = std::time::Instant::now();
 
-        let (tx, rx) = std::sync::mpsc::channel();
+        let wg = WaitGroup::new();
 
+        let wg_write = wg.clone();
         let write_handle = thread::spawn(move || {
             let write = LOCK.write();
-            tx.send(()).unwrap();
+            wg_write.done();
             thread::sleep(Duration::from_secs(1));
             drop(write);
         });
 
         let try_write_handle = thread::spawn(move || {
-            let _ = rx.recv().unwrap();
+            wg.wait();
             assert!(LOCK.try_write().is_err());
         });
 
