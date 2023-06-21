@@ -46,7 +46,7 @@ impl Clone for WaitGroup {
 
 impl Drop for WaitGroup {
     fn drop(&mut self) {
-        if self.count().fetch_sub(1, Ordering::Relaxed) != 1 {
+        if self.count().fetch_sub(1, Ordering::Release) != 1 {
             return;
         }
 
