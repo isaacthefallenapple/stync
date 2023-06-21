@@ -129,12 +129,12 @@ impl<T> RWLock<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{thread, time::Duration};
+    use std::{cell::UnsafeCell, thread, time::Duration};
 
     #[test]
     fn write_only() {
-        static mut RESOURCE: isize = 0;
-        static LOCK: RWLock<isize> = unsafe { RWLock::new(&RESOURCE as *const _ as *mut _) };
+        static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(0);
+        static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
 
         const N: isize = 10;
         const M: isize = 10000;
@@ -158,14 +158,14 @@ mod tests {
 
     #[test]
     fn cannot_write_while_reading() {
-        static mut RESOURCE: isize = 10;
-        static LOCK: RWLock<isize> = unsafe { RWLock::new(&RESOURCE as *const _ as *mut _) };
+        static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(10);
+        static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
 
         let now = std::time::Instant::now();
 
         let (tx, rx) = std::sync::mpsc::channel();
 
-        let read_threads: Vec<_> = (0..10)
+        let read_threads: Vec<_> = (0..if cfg!(miri) { 3 } else { 100 })
             .map(move |id| {
                 let tx = tx.clone();
                 thread::spawn(move || {
