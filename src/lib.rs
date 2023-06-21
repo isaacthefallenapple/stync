@@ -7,8 +7,11 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+/// If this bit is set, the a writer is currently holding the lock.
 const WRITE_LOCK_FLAG: u64 = 1 << 63;
+/// If this bit is set, a writer wants to acquire the lock.
 const WRITE_QUEUE_FLAG: u64 = 1 << 62;
+/// If any of these bits are set, no readers should be acquiring the lock.
 const WRITE_MASK: u64 = WRITE_LOCK_FLAG | WRITE_QUEUE_FLAG;
 const READER_MASK: u64 = WRITE_QUEUE_FLAG - 1;
 
@@ -17,6 +20,7 @@ pub struct RWLock<T> {
     data: *mut T,
 }
 
+// `T` has to be `Send` because `WriteLock` is `Send`.
 unsafe impl<T: Send + Sync> Sync for RWLock<T> {}
 
 /// It's safe to read from the protected resource until this guard is dropped.
@@ -68,7 +72,10 @@ impl<'a, T> Drop for WriteGuard<'a, T> {
 impl<T> RWLock<T> {
     /// # Safety
     ///
+    /// The caller must guarantee that `data` outlives the lock and doesn't get accessed (for
+    /// writing **or reading**) while the lock is live.
     ///
+    /// Other operations on this data structure are only safe as long as that invariant is upheld.
     pub const unsafe fn new(data: *mut T) -> Self {
         Self {
             lock: AtomicU64::new(0),
@@ -76,6 +83,7 @@ impl<T> RWLock<T> {
         }
     }
 
+    /// Blocks the thread until it's safe to read the data.
     pub fn read_lock(&self) -> ReadGuard<'_, T> {
         // I don't like this but I don't know how else to register a reader without a race
         // try registering a reader; if there is currently a writer, unregister again
@@ -90,6 +98,7 @@ impl<T> RWLock<T> {
         self.lock.fetch_sub(1, Ordering::SeqCst);
     }
 
+    /// Blocks the thread until it's safe to write the data.
     pub fn write_lock(&self) -> WriteGuard<'_, T> {
         let guard = WriteGuard(self);
 
