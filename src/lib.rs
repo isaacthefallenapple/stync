@@ -7,6 +7,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+pub mod wait_group;
+
 /// If this bit is set, the a writer is currently holding the lock.
 const WRITE_LOCK_FLAG: u64 = 1 << 63;
 /// If this bit is set, a writer wants to acquire the lock.
