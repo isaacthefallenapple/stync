@@ -216,6 +216,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(feature = "timed"), ignore)]
     fn cannot_write_while_reading() {
         static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(10);
         static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
@@ -281,6 +282,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(feature = "timed"), ignore)]
     fn test_try_write_doesnt_block() {
         static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(0);
         static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };

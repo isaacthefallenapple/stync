@@ -70,6 +70,7 @@ mod tests {
     };
 
     #[test]
+    #[cfg_attr(not(feature = "timed"), ignore)]
     fn simple() {
         let wg = WaitGroup::new();
 
