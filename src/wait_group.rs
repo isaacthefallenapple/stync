@@ -91,3 +91,72 @@ pub mod raii {
         }
     }
 }
+
+pub mod manual {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    pub struct WaitGroup(AtomicUsize);
+
+    impl WaitGroup {
+        pub const fn new(count: usize) -> Self {
+            Self(AtomicUsize::new(count))
+        }
+
+        pub fn waiting_on(&self) -> usize {
+            self.count().load(Ordering::Acquire)
+        }
+
+        pub fn wait(&self) {
+            while self.count().load(Ordering::Acquire) != 0 {
+                std::hint::spin_loop();
+            }
+        }
+
+        pub fn done(&self) {
+            self.count().fetch_sub(1, Ordering::Release);
+        }
+
+        pub fn add(&self, delta: usize) {
+            self.count().fetch_add(delta, Ordering::Acquire);
+        }
+
+        #[inline(always)]
+        fn count(&self) -> &AtomicUsize {
+            &self.0
+        }
+    }
+
+    unsafe impl Sync for WaitGroup {}
+    // TODO: should this be `Send`?
+    // unsafe impl Send for WaitGroup {}
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::{
+            thread,
+            time::{Duration, Instant},
+        };
+
+        #[test]
+        #[cfg_attr(not(feature = "timed"), ignore)]
+        fn simple() {
+            let wg = WaitGroup::new(10);
+
+            let now = Instant::now();
+
+            thread::scope(|scope| {
+                for _ in 0..10 {
+                    scope.spawn(|| {
+                        thread::sleep(Duration::from_secs(1));
+                        wg.done();
+                    });
+                }
+            });
+
+            wg.wait();
+            assert!(dbg!(now.elapsed().as_millis()) >= 1000);
+        }
+    }
+}
