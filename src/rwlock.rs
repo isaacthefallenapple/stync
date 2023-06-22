@@ -187,7 +187,7 @@ impl<T> RWLock<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wait_group::raii::WaitGroup;
+    use crate::wait_group;
     use std::{cell::UnsafeCell, thread, time::Duration};
 
     #[test]
@@ -218,20 +218,22 @@ mod tests {
     #[test]
     #[cfg_attr(not(feature = "timed"), ignore)]
     fn cannot_write_while_reading() {
+        use wait_group::manual::WaitGroup;
+
         static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(10);
         static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
 
         let now = std::time::Instant::now();
 
-        let wg = WaitGroup::new();
+        const TASKS: usize = if cfg!(miri) { 3 } else { 100 };
+        static WG: WaitGroup = WaitGroup::new(TASKS);
 
-        let read_threads: Vec<_> = (0..if cfg!(miri) { 3 } else { 100 })
+        let read_threads: Vec<_> = (0..TASKS)
             .map(|id| {
-                let wg = wg.clone();
                 thread::spawn(move || {
                     eprintln!("[{id}] getting read lock");
                     let lock = LOCK.read();
-                    wg.done();
+                    WG.done();
                     eprintln!("[{id}] got read lock");
 
                     assert_eq!(*lock, 10);
@@ -243,7 +245,7 @@ mod tests {
             })
             .collect();
 
-        wg.wait();
+        WG.wait();
 
         *LOCK.write() *= 10;
 
@@ -284,6 +286,8 @@ mod tests {
     #[test]
     #[cfg_attr(not(feature = "timed"), ignore)]
     fn test_try_write_doesnt_block() {
+        use wait_group::raii::WaitGroup;
+
         static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(0);
         static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
 
