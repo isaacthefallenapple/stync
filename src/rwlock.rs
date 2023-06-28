@@ -1,6 +1,6 @@
 use std::{
+    cell::UnsafeCell,
     ops::{Deref, DerefMut},
-    ptr::NonNull,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -14,7 +14,7 @@ const READER_MASK: u64 = WRITE_QUEUE_FLAG - 1;
 
 pub struct RWLock<T> {
     lock: AtomicU64,
-    data: NonNull<T>,
+    data: UnsafeCell<T>,
 }
 
 // `T` has to be `Send` because `WriteLock` is `Send`.
@@ -29,7 +29,7 @@ impl<'a, T> Deref for ReadGuard<'a, T> {
     fn deref(&self) -> &Self::Target {
         // SAFETY: this is safe because we hold the `ReadGuard` and constructing a `RWLock`
         // requires `data` outlive `self`.
-        unsafe { self.0.data.as_ref() }
+        unsafe { &*self.0.data.get() }
     }
 }
 
@@ -48,7 +48,7 @@ impl<'a, T> Deref for WriteGuard<'a, T> {
     fn deref(&self) -> &Self::Target {
         // SAFETY: this is safe because no one else can write to `data` while we hold this guard and
         // constructing a `RWLock` requires `data` outlive `self`.
-        unsafe { self.0.data.as_ref() }
+        unsafe { &*self.0.data.get() }
     }
 }
 
@@ -56,7 +56,7 @@ impl<'a, T> DerefMut for WriteGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: this is safe because no one else can write to or read from `data` while we hold
         // this guard and constructing a `RWLock` requires `data` outlive `self`.
-        unsafe { &mut *self.0.data.as_ptr() }
+        unsafe { &mut *self.0.data.get() }
     }
 }
 
@@ -80,16 +80,10 @@ pub enum TryWriteError {
 }
 
 impl<T> RWLock<T> {
-    /// # Safety
-    ///
-    /// The caller must guarantee that `data` outlives the lock and doesn't get accessed (for
-    /// writing **or reading**) while the lock is live.
-    ///
-    /// Other operations on this data structure are only safe as long as that invariant is upheld.
-    pub const unsafe fn new(data: *mut T) -> Self {
+    pub const fn new(value: T) -> Self {
         Self {
             lock: AtomicU64::new(0),
-            data: NonNull::new_unchecked(data),
+            data: UnsafeCell::new(value),
         }
     }
 
@@ -188,12 +182,11 @@ impl<T> RWLock<T> {
 mod tests {
     use super::*;
     use crate::wait_group;
-    use std::{cell::UnsafeCell, thread, time::Duration};
+    use std::{thread, time::Duration};
 
     #[test]
     fn write_only() {
-        static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(0);
-        static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
+        static LOCK: RWLock<isize> = RWLock::new(0);
 
         const N: isize = 10;
         const M: isize = 10000;
@@ -220,8 +213,7 @@ mod tests {
     fn cannot_write_while_reading() {
         use wait_group::manual::WaitGroup;
 
-        static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(10);
-        static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
+        static LOCK: RWLock<isize> = RWLock::new(10);
 
         let now = std::time::Instant::now();
 
@@ -260,8 +252,7 @@ mod tests {
 
     #[test]
     fn test_try() {
-        static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(0);
-        static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
+        static LOCK: RWLock<isize> = RWLock::new(0);
 
         for _ in 0..10 {
             let read = LOCK.read();
@@ -288,8 +279,7 @@ mod tests {
     fn test_try_write_doesnt_block() {
         use wait_group::raii::WaitGroup;
 
-        static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(0);
-        static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
+        static LOCK: RWLock<isize> = RWLock::new(0);
 
         let now = std::time::Instant::now();
 
@@ -317,8 +307,7 @@ mod tests {
 
     #[test]
     fn test_try_read_fails_with_reader_count() {
-        static mut RESOURCE: UnsafeCell<isize> = UnsafeCell::new(0);
-        static LOCK: RWLock<isize> = unsafe { RWLock::new(RESOURCE.get()) };
+        static LOCK: RWLock<isize> = RWLock::new(0);
 
         const N: u64 = 100;
         let _readers: Vec<_> = (0..N).map(|_| LOCK.read()).collect();
