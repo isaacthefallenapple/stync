@@ -21,6 +21,9 @@ pub struct RWLock<T> {
 // `T` has to be `Send` for `RWLock` to be `Sync`.
 unsafe impl<T: Send + Sync> Sync for RWLock<T> {}
 
+// If `T` is `Send` then it's fine for the lock to be `Send` as well.
+unsafe impl<T: Send> Send for RWLock<T> {}
+
 /// It's safe to read from the protected resource until this guard is dropped.
 pub struct ReadGuard<'a, T>(&'a RWLock<T>);
 
