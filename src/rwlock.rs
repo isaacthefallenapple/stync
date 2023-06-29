@@ -17,7 +17,8 @@ pub struct RWLock<T> {
     data: UnsafeCell<T>,
 }
 
-// `T` has to be `Send` because `WriteLock` is `Send`.
+// Because `&RWLock` can make a `&mut T` and you can move out of a `&mut T`,
+// `T` has to be `Send` for `RWLock` to be `Sync`.
 unsafe impl<T: Send + Sync> Sync for RWLock<T> {}
 
 /// It's safe to read from the protected resource until this guard is dropped.
